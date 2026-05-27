@@ -1,0 +1,12 @@
+*.o
+*.pyd
+*.dll
+*.exe
+build/
+__pycache__/
+*_wrap.cxx
+*_wrap.c
+*.pyc
+.DS_Store
+src/python/parqueadero.py
+src/python/__pycache__/
