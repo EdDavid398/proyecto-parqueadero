@@ -4,63 +4,120 @@
 #include <iostream>
 #include <cstring>
 #include <sstream>
+#include <thread>
+#include <mutex>
 
-#define PUERTO 8080
-#define BUF 1024
+#define PUERTO_CLIENTES    8080
+#define PUERTO_VISUALIZADOR 8081
+#define BUFFER 1024
+
+Parqueadero parqueadero(20);
+std::mutex  mutex_parqueadero;
+
+SOCKET socket_visualizador = INVALID_SOCKET;
+std::mutex mutex_visualizador;
+
+void reenviarAlVisualizador(const std::string& mensaje) {
+    std::lock_guard<std::mutex> bloqueo(mutex_visualizador);
+    if (socket_visualizador == INVALID_SOCKET) return;
+    send(socket_visualizador, mensaje.c_str(), (int)mensaje.length(), 0);
+}
+
+void escucharVisualizador() {
+    SOCKET servidor_viz = socket(AF_INET, SOCK_STREAM, 0);
+    int opcion = 1;
+    setsockopt(servidor_viz, SOL_SOCKET, SO_REUSEADDR, (char*)&opcion, sizeof(opcion));
+
+    struct sockaddr_in direccion = {};
+    direccion.sin_family      = AF_INET;
+    direccion.sin_addr.s_addr = INADDR_ANY;
+    direccion.sin_port        = htons(PUERTO_VISUALIZADOR);
+
+    bind(servidor_viz, (struct sockaddr*)&direccion, sizeof(direccion));
+    listen(servidor_viz, 1);
+    std::cout << "Esperando visualizador en puerto " << PUERTO_VISUALIZADOR << "\n";
+
+    while (true) {
+        SOCKET cliente_viz = accept(servidor_viz, NULL, NULL);
+        {
+            std::lock_guard<std::mutex> bloqueo(mutex_visualizador);
+            if (socket_visualizador != INVALID_SOCKET)
+                closesocket(socket_visualizador);
+            socket_visualizador = cliente_viz;
+        }
+        std::cout << "Visualizador conectado\n";
+    }
+}
+
+void atenderCliente(SOCKET cliente) {
+    char buffer[BUFFER];
+
+    while (true) {
+        memset(buffer, 0, BUFFER);
+        int bytes = recv(cliente, buffer, BUFFER, 0);
+        if (bytes <= 0) break;
+
+        std::string mensaje(buffer);
+        std::stringstream flujo(mensaje);
+        std::string tipo, placa, hora;
+        int celda = -1;
+
+        std::getline(flujo, tipo,  '|');
+        std::getline(flujo, placa, '|');
+
+        {
+            std::lock_guard<std::mutex> bloqueo(mutex_parqueadero);
+
+            if (tipo == "ENTRADA") {
+                std::getline(flujo, hora, '|');
+                flujo >> celda;
+                bool registrado = parqueadero.entrada(placa, hora, celda);
+                std::cout << (registrado ? "[ENTRADA] " : "[DUPLICADO] ")
+                          << placa << " celda " << celda << "\n";
+
+            } else if (tipo == "SALIDA") {
+                bool liberado = parqueadero.salida(placa);
+                std::cout << (liberado ? "[SALIDA] " : "[NO ENCONTRADO] ")
+                          << placa << "\n";
+            }
+        }
+
+        reenviarAlVisualizador(mensaje);
+
+        std::string respuesta = "OK|" + std::to_string(parqueadero.getLibres());
+        send(cliente, respuesta.c_str(), (int)respuesta.length(), 0);
+    }
+
+    closesocket(cliente);
+    std::cout << "Cliente desconectado\n";
+}
 
 int main() {
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2,2), &wsa);
+    WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    Parqueadero park(20);
+    std::thread(escucharVisualizador).detach();
 
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET servidor = socket(AF_INET, SOCK_STREAM, 0);
+    int opcion = 1;
+    setsockopt(servidor, SOL_SOCKET, SO_REUSEADDR, (char*)&opcion, sizeof(opcion));
 
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(PUERTO);
+    struct sockaddr_in direccion = {};
+    direccion.sin_family      = AF_INET;
+    direccion.sin_addr.s_addr = INADDR_ANY;
+    direccion.sin_port        = htons(PUERTO_CLIENTES);
 
-    int opt = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
-    bind(sock, (struct sockaddr*)&addr, sizeof(addr));
-    listen(sock, 1);
+    bind(servidor, (struct sockaddr*)&direccion, sizeof(direccion));
+    listen(servidor, 5);
+    std::cout << "Servidor activo en puerto " << PUERTO_CLIENTES << "\n";
 
-    std::cout << "Servidor listo en puerto " << PUERTO << "\n";
-
-    SOCKET cli = accept(sock, NULL, NULL);
-    std::cout << "Cliente conectado\n";
-
-    char buf[BUF];
     while (true) {
-        memset(buf, 0, BUF);
-        int n = recv(cli, buf, BUF, 0);
-        if (n <= 0) break;
-
-        std::string msg(buf);
-        std::stringstream ss(msg);
-        std::string cmd, placa, hora;
-        int celda;
-
-        std::getline(ss, cmd, '|');
-        std::getline(ss, placa, '|');
-
-        if (cmd == "ENTRADA") {
-            std::getline(ss, hora, '|');
-            ss >> celda;
-            bool ok = park.entrada(placa, hora, celda);
-            std::cout << (ok ? "[+] " : "[!] ") << placa << " celda " << celda << "\n";
-        } else if (cmd == "SALIDA") {
-            bool ok = park.salida(placa);
-            std::cout << (ok ? "[-] " : "[!] ") << placa << "\n";
-        }
-
-        std::string resp = "OK|" + std::to_string(park.getLibres());
-        send(cli, resp.c_str(), resp.length(), 0);
+        SOCKET cliente = accept(servidor, NULL, NULL);
+        std::cout << "Cliente conectado\n";
+        std::thread(atenderCliente, cliente).detach();
     }
 
-    closesocket(cli);
-    closesocket(sock);
+    closesocket(servidor);
     WSACleanup();
     return 0;
 }
