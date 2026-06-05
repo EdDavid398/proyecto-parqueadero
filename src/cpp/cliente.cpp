@@ -38,7 +38,7 @@ int main() {
     struct sockaddr_in srv = {};
     srv.sin_family = AF_INET;
     srv.sin_port = htons(PUERTO);
-    srv.sin_addr.s_addr = inet_addr("127.0.0.1");
+    srv.sin_addr.s_addr = inet_addr("192.168.20.31");
 
     if (connect(sock, (struct sockaddr*)&srv, sizeof(srv)) == SOCKET_ERROR) {
         std::cerr << "No conectó al servidor\n";
